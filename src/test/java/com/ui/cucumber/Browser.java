@@ -1,21 +1,20 @@
 package com.ui.cucumber;
 
-
+import com.Entities.Response.CreateTestRunResponse;
+import com.Entities.Response.GetTestResult;
+import com.Entities.Request.AddTestResult;
+import com.Entities.Request.CreateTestRun;
+import com.Entities.Request.ShallowReference;
 import com.ui.cucumber.Repo.HomePage;
 import com.ui.cucumber.Repo.SettingsPage;
 import com.backend.Constants;
 import com.google.gson.Gson;
-import com.reqtest.Entities.Request.CreateTestRun;
-import com.reqtest.Entities.Request.Fields;
-import com.reqtest.Entities.Request.Name;
-import com.reqtest.Entities.Response.Content;
-import com.reqtest.Entities.Response.CreateTestRunResponse;
-import com.reqtest.Entities.Response.GetContentsResponse;
-import com.reqtest.TestRunController;
+import com.backend.TestRunController;
 import io.cucumber.java.Before;
 import io.cucumber.java.After;
 import io.cucumber.java.Scenario;
 import io.cucumber.java.Status;
+import io.github.bonigarcia.wdm.WebDriverManager;
 import org.apache.commons.lang3.RandomUtils;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
@@ -26,10 +25,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 import java.util.Properties;
-import java.util.function.Predicate;
 
 /**
  * Created by mac on 25/08/17.
@@ -45,7 +42,7 @@ public class Browser {
     Gson gson = new Gson();
     static boolean bSuite = false;
     static String testRunId;
-
+    static int testCaseCount = 0;
 
     @Before
     public void setUp(){
@@ -65,8 +62,7 @@ public class Browser {
         String browser = prop.getProperty("browser");
         switch (browser){
             case "chrome" :
-                System.out.println("Chromedriver path " + prop.getProperty("driverExecutable") + "/chromedriver");
-                System.setProperty("webdriver.chrome.driver",prop.getProperty("driverExecutable") + "/chromedriver");
+                WebDriverManager.chromedriver().setup();
                 driver = new ChromeDriver();
                 break;
 
@@ -81,19 +77,17 @@ public class Browser {
 
         }
 
-        homePage = new HomePage(driver);
-        settings = new SettingsPage(driver);
-
         if(!bSuite){
-            String executionTitle = "Suite Execution - " + RandomUtils.nextInt();
+            String executionTitle = "Automation Execution - " + RandomUtils.nextInt();
             CreateTestRunResponse response = testRunController.createNewTestRun(
-                    getApiPath(Constants.REQTEST, Constants.CREATE_TEST_RUN),
-                    getReqtestHeaders(),
-                    getCreateTestRunBody(executionTitle));
-            testRunId = Long.toString(response.getResult().getId());
+                    getApiPath(Constants.AZURE_API, Constants.CREATE_TEST_RUN),
+                    getCreateTestRunBody(executionTitle, Constants.TEST_PLAN_ID));
+            testRunId = String.valueOf(response.getId());
             bSuite = true;
         }
 
+        homePage = new HomePage(driver);
+        settings = new SettingsPage(driver);
     }
 
     public WebDriver getDriver(){
@@ -108,37 +102,26 @@ public class Browser {
         return homePage;
     }
 
-    public SettingsPage getSettingsPage(){
-        return settings;
-    }
-
     @After
     public void tearDown(Scenario scenario) {
-        String testResult = scenario.getStatus() == Status.PASSED ? "OK" : "Failed";
+        String testResult = scenario.getStatus() == Status.PASSED ? "Passed" : "Failed";
+        testCaseCount++;
 
-        String reqTestCaseId = scenario.getSourceTagNames().toArray()[0].toString().substring(1);
+        String azureTestCaseId = scenario.getSourceTagNames().toArray()[0].toString().substring(1);
 
-        testRunController.addTestcase(
-                getApiPath(Constants.REQTEST, Constants.ADD_TEST_CASE),
-                getReqtestHeaders(),
-                getArrayBody(reqTestCaseId),
-                testRunId);
-
-        GetContentsResponse contentsResponse = testRunController.getTestRunContents(
-                getApiPath(Constants.REQTEST, Constants.GET_CONTENTS),
-                getReqtestHeaders(),
-                testRunId);
-
-        Predicate<Content> findWithTestCaseName = e -> e.getName().equals(scenario.getName());
-        long contentId = contentsResponse.getResult().getContents().stream()
-                .filter(findWithTestCaseName).findFirst().get().getId();
-
-        testRunController.executeContent(
-                getApiPath(Constants.REQTEST, Constants.EXECUTE_CONTENT),
-                getReqtestHeaders(),
-                getResultQueryParams(testResult),
+        GetTestResult result = testRunController.getAllTestResults(getApiPath(Constants.AZURE_API, Constants.TEST_RESULT), testRunId);
+        int totalCases = result.getValue().size();
+        int resultId = result.getValue().stream().filter(e-> e.getTestPoint().getId().equals(azureTestCaseId)).findAny().get().getId();
+        testRunController.updateTestCaseStatus(getApiPath(Constants.AZURE_API, Constants.TEST_RESULT),
                 testRunId,
-                getArrayBody(String.valueOf(contentId)));
+                getUpdateTestResultBody(testRunId, azureTestCaseId, testResult, resultId));
+
+        if (testCaseCount==totalCases){
+            testRunController.updateTestRunStatus(getApiPath(Constants.AZURE_API, Constants.UPDATE_TEST_RUN),
+                    testRunId,
+                    getCompleteTestRunBody());
+        }
+
         driver.quit();
     }
 
@@ -147,30 +130,21 @@ public class Browser {
         return base_url + path;
     }
 
-    public Map<String, ?> getReqtestHeaders(){
-        Map<String, String> headers = new HashMap<>();
-        headers.put("accept", "application/json");
-        headers.put("Content-Type", "application/json");
-        headers.put("reqtest-pat", Constants.REQTEST_PAT);
-        return headers;
+    private String getUpdateTestResultBody(String runId, String pointId, String outcome, int resultId){
+        ShallowReference testRun = ShallowReference.builder().id(runId).build();
+        ShallowReference testPoint = ShallowReference.builder().id(pointId).build();
+        List<AddTestResult> addTestResult = List.of(AddTestResult.builder().id(resultId).testRun(testRun).testPoint(testPoint).outcome(outcome).build());
+        return gson.toJson(addTestResult);
     }
 
-    private String getCreateTestRunBody(String testRunTitle){
-        Name name = Name.builder().value(testRunTitle).build();
-        Fields fields = Fields.builder().Name(name).build();
-        CreateTestRun testRun = CreateTestRun.builder().fields(fields).build();
-        return gson.toJson(testRun);
+    private String getCompleteTestRunBody(){
+        CreateTestRun updateTestRun = CreateTestRun.builder().state("Completed").build();
+        return gson.toJson(updateTestRun);
     }
 
-    private String getArrayBody(String id){
-        return "[ " + id + " ]";
+    private String getCreateTestRunBody(String name, String planId){
+        ShallowReference plan = ShallowReference.builder().id(planId).build();
+        CreateTestRun createTestRun = CreateTestRun.builder().name(name).plan(plan).pointIds(List.of(1,2)).build();
+        return gson.toJson(createTestRun);
     }
-
-    private Map<String, String> getResultQueryParams(String result){
-        Map<String, String> qParams = new HashMap<>();
-        qParams.put("result", result);
-        return qParams;
-    }
-
-
 }

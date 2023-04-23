@@ -17,10 +17,10 @@ public class HomePage {
         PageFactory.initElements(driver, this);
     }
 
-    @FindBy(id = "search_form_input_homepage")
+    @FindBy(id = "searchbox_input")
     private WebElement searchBar;
 
-    @FindBy(id = "search_button_homepage")
+    @FindBy(xpath = "//button[@aria-label='Search']")
     private WebElement searchButton;
 
     @FindBy(id = "r1-0")
