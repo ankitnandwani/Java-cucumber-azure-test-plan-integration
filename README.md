@@ -1,5 +1,5 @@
-# ReqTestUIBDD
-BDD UI Framework integration with ReqTest
+# Azure Test Plan Java BDD Integration
+BDD UI Framework integration with Azure Test Plan
 
 
 # Run
